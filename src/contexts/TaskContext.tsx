@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import type { Task, TasksByDate, MonthTitles, WeekTitles, TeamStats } from '../types';
 import { TEAMS } from '../data/credentials';
+import { useAuth } from './AuthContext';
 
 interface TaskContextType {
   tasks: TasksByDate;
@@ -19,49 +20,35 @@ interface TaskContextType {
 
 const TaskContext = createContext<TaskContextType | null>(null);
 
-function loadTasks(): TasksByDate {
-  try {
-    const data = localStorage.getItem('cal_tasks');
-    return data ? JSON.parse(data) : {};
-  } catch {
-    return {};
-  }
-}
-
-function loadMonthTitles(): MonthTitles {
-  try {
-    const data = localStorage.getItem('cal_month_titles');
-    return data ? JSON.parse(data) : {};
-  } catch {
-    return {};
-  }
-}
-
-function loadWeekTitles(): WeekTitles {
-  try {
-    const data = localStorage.getItem('cal_week_titles');
-    return data ? JSON.parse(data) : {};
-  } catch {
-    return {};
-  }
-}
-
 export function TaskProvider({ children }: { children: ReactNode }) {
-  const [tasks, setTasks] = useState<TasksByDate>(loadTasks);
-  const [monthTitles, setMonthTitles] = useState<MonthTitles>(loadMonthTitles);
-  const [weekTitles, setWeekTitles] = useState<WeekTitles>(loadWeekTitles);
+  const { token } = useAuth();
+  const [tasks, setTasks] = useState<TasksByDate>({});
+  const [monthTitles, setMonthTitlesState] = useState<MonthTitles>({});
+  const [weekTitles, setWeekTitlesState] = useState<WeekTitles>({});
+
+  const apiFetch = useCallback(async (path: string, options: RequestInit = {}): Promise<Response> => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(options.headers as Record<string, string> || {}),
+    };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(`/api${path}`, { ...options, headers });
+  }, [token]);
 
   useEffect(() => {
-    localStorage.setItem('cal_tasks', JSON.stringify(tasks));
-  }, [tasks]);
+    if (!token) {
+      setTasks({});
+      setMonthTitlesState({});
+      setWeekTitlesState({});
+      return;
+    }
 
-  useEffect(() => {
-    localStorage.setItem('cal_month_titles', JSON.stringify(monthTitles));
-  }, [monthTitles]);
-
-  useEffect(() => {
-    localStorage.setItem('cal_week_titles', JSON.stringify(weekTitles));
-  }, [weekTitles]);
+    Promise.all([
+      apiFetch('/tasks').then(r => r.json()).then(d => setTasks(d.tasks)).catch(() => {}),
+      apiFetch('/titles/months').then(r => r.json()).then(d => setMonthTitlesState(d.monthTitles)).catch(() => {}),
+      apiFetch('/titles/weeks').then(r => r.json()).then(d => setWeekTitlesState(d.weekTitles)).catch(() => {}),
+    ]);
+  }, [token, apiFetch]);
 
   const getTasksForDate = useCallback((dateKey: string): Task[] => {
     return tasks[dateKey] || [];
@@ -80,28 +67,36 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     return result;
   }, [tasks]);
 
-  const addTask = useCallback((dateKey: string, text: string, assignedTo: string) => {
-    const timestamp = Date.now();
-    const id = `${dateKey}-${timestamp}`;
-    const newTask: Task = { id, text, completed: false, assignedTo };
+  const addTask = useCallback(async (dateKey: string, text: string, assignedTo: string) => {
+    const res = await apiFetch('/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ dateKey, text, assignedTo }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
     setTasks(prev => {
       const existing = prev[dateKey] || [];
-      return { ...prev, [dateKey]: [...existing, newTask] };
+      return { ...prev, [dateKey]: [...existing, data.task] };
     });
-  }, []);
+  }, [apiFetch]);
 
-  const toggleTask = useCallback((dateKey: string, taskId: string) => {
+  const toggleTask = useCallback(async (dateKey: string, taskId: string) => {
+    const res = await apiFetch(`/tasks/${taskId}/toggle`, { method: 'PATCH' });
+    if (!res.ok) return;
+    const data = await res.json();
     setTasks(prev => {
       const dayTasks = prev[dateKey];
       if (!dayTasks) return prev;
       return {
         ...prev,
-        [dateKey]: dayTasks.map(t => t.id === taskId ? { ...t, completed: !t.completed } : t),
+        [dateKey]: dayTasks.map(t => t.id === taskId ? data.task : t),
       };
     });
-  }, []);
+  }, [apiFetch]);
 
-  const deleteTask = useCallback((dateKey: string, taskId: string) => {
+  const deleteTask = useCallback(async (dateKey: string, taskId: string) => {
+    const res = await apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });
+    if (!res.ok) return;
     setTasks(prev => {
       const dayTasks = prev[dateKey];
       if (!dayTasks) return prev;
@@ -112,15 +107,23 @@ export function TaskProvider({ children }: { children: ReactNode }) {
       }
       return { ...prev, [dateKey]: filtered };
     });
-  }, []);
+  }, [apiFetch]);
 
-  const setMonthTitle = useCallback((monthKey: string, title: string) => {
-    setMonthTitles(prev => ({ ...prev, [monthKey]: title }));
-  }, []);
+  const setMonthTitle = useCallback(async (monthKey: string, title: string) => {
+    setMonthTitlesState(prev => ({ ...prev, [monthKey]: title }));
+    await apiFetch(`/titles/months/${monthKey}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    });
+  }, [apiFetch]);
 
-  const setWeekTitle = useCallback((weekKey: string, title: string) => {
-    setWeekTitles(prev => ({ ...prev, [weekKey]: title }));
-  }, []);
+  const setWeekTitle = useCallback(async (weekKey: string, title: string) => {
+    setWeekTitlesState(prev => ({ ...prev, [weekKey]: title }));
+    await apiFetch(`/titles/weeks/${weekKey}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    });
+  }, [apiFetch]);
 
   const getMonthStats = useCallback((year: number, month: number) => {
     const daysInMonth = new Date(year, month + 1, 0).getDate();
