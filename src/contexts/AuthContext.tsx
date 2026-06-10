@@ -1,10 +1,10 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
 import type { AuthUser } from '../types';
+import { CREDENTIALS } from '../data/credentials';
 
 interface AuthContextType {
   user: AuthUser | null;
-  token: string | null;
-  login: (usuario: string, password: string) => Promise<boolean>;
+  login: (usuario: string, password: string) => boolean;
   logout: () => void;
   isAdmin: boolean;
 }
@@ -16,36 +16,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem('cal_user');
     return stored ? JSON.parse(stored) : null;
   });
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('cal_token'));
 
-  const login = useCallback(async (usuario: string, password: string): Promise<boolean> => {
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ usuario, password }),
-      });
-      if (!res.ok) return false;
-      const data = await res.json();
-      setUser(data.user);
-      setToken(data.token);
-      localStorage.setItem('cal_user', JSON.stringify(data.user));
-      localStorage.setItem('cal_token', data.token);
-      return true;
-    } catch {
-      return false;
-    }
+  const login = useCallback((usuario: string, password: string): boolean => {
+    const cred = CREDENTIALS.find(c => c.usuario === usuario.toLowerCase());
+    if (!cred || cred.password !== password) return false;
+
+    const authUser: AuthUser = {
+      usuario: cred.usuario,
+      equipo: cred.equipo,
+      role: cred.usuario === 'admin' || cred.usuario === 'direccion' ? 'admin' : 'team',
+      isAdmin: cred.usuario === 'admin' || cred.usuario === 'direccion',
+    };
+
+    setUser(authUser);
+    localStorage.setItem('cal_user', JSON.stringify(authUser));
+    return true;
   }, []);
 
   const logout = useCallback(() => {
     setUser(null);
-    setToken(null);
     localStorage.removeItem('cal_user');
-    localStorage.removeItem('cal_token');
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, isAdmin: user?.isAdmin ?? false }}>
+    <AuthContext.Provider value={{ user, login, logout, isAdmin: user?.isAdmin ?? false }}>
       {children}
     </AuthContext.Provider>
   );
